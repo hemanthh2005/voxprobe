@@ -1,18 +1,18 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import { Header } from './components/Header';
 import { EvidenceCockpit } from './components/EvidenceCockpit';
 import { RegressionTestModal } from './components/RegressionTestModal';
 import { AssemblyAiVoiceClient } from './services/assemblyAiVoice';
-import { AgentStatus, EvidenceNode, TranscriptTurn } from './types';
+import { AgentStatus, EngineMode, Investigation, TranscriptTurn } from './types';
 
 export const App: React.FC = () => {
   const [status, setStatus] = useState<AgentStatus>('idle');
+  const [engineMode, setEngineMode] = useState<EngineMode>('simulation');
   const [turns, setTurns] = useState<TranscriptTurn[]>([]);
-  const [evidences, setEvidences] = useState<EvidenceNode[]>([]);
-  const [activeEvidence, setActiveEvidence] = useState<EvidenceNode | null>(null);
+  const [investigations, setInvestigations] = useState<Investigation[]>([]);
+  const [currentInvestigation, setCurrentInvestigation] = useState<Investigation | null>(null);
   const [volume, setVolume] = useState<number>(0);
   const [isRecording, setIsRecording] = useState<boolean>(false);
-  const [isSimulated, setIsSimulated] = useState<boolean>(false);
   const [regressionModalCode, setRegressionModalCode] = useState<string | null>(null);
 
   const voiceClientRef = useRef<AssemblyAiVoiceClient | null>(null);
@@ -30,6 +30,7 @@ export const App: React.FC = () => {
 
     const client = new AssemblyAiVoiceClient({
       onStatusChange: (newStatus) => setStatus(newStatus),
+      onEngineModeChange: (mode) => setEngineMode(mode),
       onTranscriptTurn: (turn) => {
         setTurns((prev) => {
           if (turn.isPartial) {
@@ -40,9 +41,17 @@ export const App: React.FC = () => {
           return [...filtered, turn];
         });
       },
-      onEvidenceCreated: (newEvidence) => {
-        setEvidences((prev) => [newEvidence, ...prev]);
-        setActiveEvidence(newEvidence);
+      onInvestigationUpdated: (inv) => {
+        setInvestigations((prev) => {
+          const idx = prev.findIndex((item) => item.traceId === inv.traceId);
+          if (idx !== -1) {
+            const copy = [...prev];
+            copy[idx] = { ...copy[idx], ...inv };
+            return copy;
+          }
+          return [inv, ...prev];
+        });
+        setCurrentInvestigation(inv);
       },
       onVolumeChange: (vol) => setVolume(vol),
       onError: (err) => console.warn('Voice Client Error:', err)
@@ -53,16 +62,15 @@ export const App: React.FC = () => {
     await client.connect();
   };
 
-  const handleRunScenario = async (prompt: string, endpoint: string) => {
+  const handleRunScenario = async (prompt: string, targetEndpoint: string) => {
     if (!voiceClientRef.current) {
-      // Auto-start client if not started
       await handleToggleRecord();
     }
     if (voiceClientRef.current) {
       if (prompt.toLowerCase().includes('regression')) {
-        await voiceClientRef.current.runRegressionScenario(prompt, endpoint);
+        await voiceClientRef.current.runRegressionScenario(prompt, targetEndpoint);
       } else {
-        await voiceClientRef.current.runScenario(prompt, endpoint);
+        await voiceClientRef.current.runScenario(prompt, targetEndpoint);
       }
     }
   };
@@ -71,14 +79,14 @@ export const App: React.FC = () => {
     <div className="flex flex-col h-screen bg-dark-950 text-slate-100 font-sans overflow-hidden">
       <Header
         status={status}
+        engineMode={engineMode}
         isRecording={isRecording}
         onToggleRecord={handleToggleRecord}
-        isSimulated={isSimulated}
       />
       <EvidenceCockpit
         turns={turns}
-        evidences={evidences}
-        activeEvidence={activeEvidence}
+        investigations={investigations}
+        currentInvestigation={currentInvestigation}
         volume={volume}
         isRecording={isRecording}
         onRunScenario={handleRunScenario}

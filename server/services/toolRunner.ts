@@ -10,25 +10,31 @@ const ALLOWED_ENDPOINT_PATTERNS = [
   /^\/api\/login$/
 ];
 
-// In-memory store for last validated evidence per endpoint to support chained tool calls
-const evidenceStore: Map<string, { validation: ValidationResult; regression?: any }> = new Map();
+// In-memory store for validated evidence per traceId to guarantee state isolation
+const evidenceStoreByTrace: Map<
+  string,
+  { traceId: string; endpoint: string; validation: ValidationResult; regression?: any }
+> = new Map();
 
 export interface ToolCallParams {
   name: string;
   args: any;
   call_id?: string;
+  trace_id?: string;
 }
 
 export interface ToolExecutionResponse {
   tool: string;
   status: 'success' | 'error';
   call_id?: string;
+  trace_id: string;
   result: any;
   evidence_id?: string;
 }
 
 export async function executeTool(params: ToolCallParams): Promise<ToolExecutionResponse> {
   const { name, args, call_id } = params;
+  const traceId = params.trace_id || args?.trace_id || `TRACE-${Math.floor(1000 + Math.random() * 9000)}`;
 
   try {
     switch (name) {
@@ -37,13 +43,15 @@ export async function executeTool(params: ToolCallParams): Promise<ToolExecution
           tool: name,
           status: 'success',
           call_id,
+          trace_id: traceId,
           result: {
+            trace_id: traceId,
             endpoints: [
-              { path: '/api/orders/ORD-1042', method: 'GET', description: 'Order ORD-1042 details' },
-              { path: '/api/orders/ORD-1043', method: 'GET', description: 'Order ORD-1043 details' },
-              { path: '/api/orders/ORD-1044', method: 'GET', description: 'Order ORD-1044 details' },
-              { path: '/api/users/USR-1001', method: 'GET', description: 'User USR-1001 profile' },
-              { path: '/api/users/USR-1002', method: 'GET', description: 'User USR-1002 profile' },
+              { path: '/api/orders/ORD-1042', method: 'GET', description: 'Order ORD-1042 details (Type Bug)' },
+              { path: '/api/orders/ORD-1043', method: 'GET', description: 'Order ORD-1043 details (Enum Bug)' },
+              { path: '/api/orders/ORD-1044', method: 'GET', description: 'Order ORD-1044 details (Valid Reference)' },
+              { path: '/api/users/USR-1001', method: 'GET', description: 'User USR-1001 profile (Missing Email Bug)' },
+              { path: '/api/users/USR-1002', method: 'GET', description: 'User USR-1002 profile (Valid Reference)' },
               { path: '/api/products/PROD-001', method: 'GET', description: 'Product PROD-001 details' },
               { path: '/api/login', method: 'POST', description: 'User authentication endpoint' }
             ]
@@ -51,13 +59,26 @@ export async function executeTool(params: ToolCallParams): Promise<ToolExecution
         };
 
       case 'inspect_contract': {
-        const endpoint = args?.endpoint || '/api/orders/ORD-1042';
+        const rawEndpoint = args?.endpoint;
+        if (!rawEndpoint || typeof rawEndpoint !== 'string') {
+          return {
+            tool: name,
+            status: 'error',
+            call_id,
+            trace_id: traceId,
+            result: { error: 'Target endpoint string is required for contract inspection.' }
+          };
+        }
+
+        const endpoint = rawEndpoint.trim();
         const spec = getOpenApiSpec();
         return {
           tool: name,
           status: 'success',
           call_id,
+          trace_id: traceId,
           result: {
+            trace_id: traceId,
             endpoint,
             contract_spec: spec.paths['/api/orders/{id}'] || spec.paths[endpoint] || 'Contract defined'
           }
@@ -65,15 +86,31 @@ export async function executeTool(params: ToolCallParams): Promise<ToolExecution
       }
 
       case 'run_api_test': {
-        const rawEndpoint = (args?.endpoint || '/api/orders/ORD-1042').trim();
-        const method = (args?.method || 'GET').toUpperCase();
-
-        // Security Check 1: Block external domain URLs or protocols
-        if (rawEndpoint.startsWith('http://') || rawEndpoint.startsWith('https://') || rawEndpoint.startsWith('//')) {
+        const rawEndpoint = args?.endpoint;
+        if (!rawEndpoint || typeof rawEndpoint !== 'string' || !rawEndpoint.trim()) {
           return {
             tool: name,
             status: 'error',
             call_id,
+            trace_id: traceId,
+            result: { error: 'Target endpoint string is required for API diagnostic testing.' }
+          };
+        }
+
+        const requestedEndpoint = rawEndpoint.trim();
+        const method = (args?.method || 'GET').toUpperCase();
+
+        // Security Check 1: Block external domain URLs or protocols
+        if (
+          requestedEndpoint.startsWith('http://') ||
+          requestedEndpoint.startsWith('https://') ||
+          requestedEndpoint.startsWith('//')
+        ) {
+          return {
+            tool: name,
+            status: 'error',
+            call_id,
+            trace_id: traceId,
             result: {
               error: 'Security Violation: External URL execution blocked by VoxProbe sandbox rules.',
               allowed_endpoints: '/api/orders/*, /api/users/*, /api/products/*, /api/login'
@@ -82,29 +119,36 @@ export async function executeTool(params: ToolCallParams): Promise<ToolExecution
         }
 
         // Standardize leading slash
-        const endpoint = rawEndpoint.startsWith('/') ? rawEndpoint : `/${rawEndpoint}`;
+        const executedEndpoint = requestedEndpoint.startsWith('/')
+          ? requestedEndpoint
+          : `/${requestedEndpoint}`;
 
         // Security Check 2: Validate against strict sandbox endpoint allowlist
-        const isAllowed = ALLOWED_ENDPOINT_PATTERNS.some((pattern) => pattern.test(endpoint));
+        const isAllowed = ALLOWED_ENDPOINT_PATTERNS.some((pattern) => pattern.test(executedEndpoint));
         if (!isAllowed) {
           return {
             tool: name,
             status: 'error',
             call_id,
+            trace_id: traceId,
             result: {
-              error: `Security Violation: Endpoint '${endpoint}' is not in the allowed diagnostic sandbox list.`,
-              allowed_patterns: ['/api/orders/:id', '/api/users/:id', '/api/products/:id', '/api/login']
+              error: `Security Violation: Endpoint '${executedEndpoint}' is not in the allowed diagnostic sandbox list.`
             }
           };
         }
 
-        // Security Check 3: Restrict HTTP methods to GET or POST
-        if (method !== 'GET' && method !== 'POST') {
+        // Security Check 3: State Integrity Validation (requested vs executed)
+        if (executedEndpoint !== requestedEndpoint && executedEndpoint !== `/${requestedEndpoint}`) {
           return {
             tool: name,
             status: 'error',
             call_id,
-            result: { error: `HTTP method '${method}' is not permitted for safe diagnostics.` }
+            trace_id: traceId,
+            result: {
+              error: 'Investigation state mismatch. Verification aborted.',
+              requested_endpoint: requestedEndpoint,
+              executed_endpoint: executedEndpoint
+            }
           };
         }
 
@@ -112,29 +156,36 @@ export async function executeTool(params: ToolCallParams): Promise<ToolExecution
         const evidenceId = `EV-${Math.floor(1000 + Math.random() * 9000)}`;
 
         // Internal HTTP Request to sandbox API
-        const apiResponse = await makeInternalApiRequest(endpoint, method);
+        const apiResponse = await makeInternalApiRequest(executedEndpoint, method);
         const durationMs = Date.now() - startTime;
 
         // Auto-run OpenAPI validation
         const validation = validateResponseAgainstContract(
-          endpoint,
+          executedEndpoint,
           method,
           apiResponse.statusCode,
           apiResponse.body,
           evidenceId
         );
 
-        // Store evidence in session map
-        evidenceStore.set(endpoint, { validation });
+        // Store evidence bound strictly to traceId
+        evidenceStoreByTrace.set(traceId, {
+          traceId,
+          endpoint: executedEndpoint,
+          validation
+        });
 
         return {
           tool: name,
           status: 'success',
           call_id,
+          trace_id: traceId,
           evidence_id: evidenceId,
           result: {
+            trace_id: traceId,
             evidence_id: evidenceId,
-            endpoint,
+            requested_endpoint: requestedEndpoint,
+            endpoint: executedEndpoint,
             method,
             status_code: apiResponse.statusCode,
             response_body: apiResponse.body,
@@ -149,46 +200,93 @@ export async function executeTool(params: ToolCallParams): Promise<ToolExecution
       }
 
       case 'validate_response': {
-        const endpoint = (args?.endpoint || '/api/orders/ORD-1042').trim();
-        const stored = evidenceStore.get(endpoint);
+        const rawEndpoint = args?.endpoint;
+        const stored = evidenceStoreByTrace.get(traceId);
 
         if (stored) {
+          // Verify endpoint matches trace stored endpoint
+          if (rawEndpoint && stored.endpoint !== rawEndpoint && stored.endpoint !== `/${rawEndpoint}`) {
+            return {
+              tool: name,
+              status: 'error',
+              call_id,
+              trace_id: traceId,
+              result: {
+                error: 'Investigation state mismatch. Verification aborted.',
+                requested_endpoint: rawEndpoint,
+                trace_endpoint: stored.endpoint
+              }
+            };
+          }
+
           return {
             tool: name,
             status: 'success',
             call_id,
+            trace_id: traceId,
             evidence_id: stored.validation.evidence_id,
-            result: stored.validation
+            result: {
+              trace_id: traceId,
+              ...stored.validation
+            }
           };
         }
 
-        // If not cached, execute test first
+        if (!rawEndpoint || typeof rawEndpoint !== 'string') {
+          return {
+            tool: name,
+            status: 'error',
+            call_id,
+            trace_id: traceId,
+            result: { error: 'Target endpoint string is required for contract validation.' }
+          };
+        }
+
+        // Execute test first if trace evidence not cached
         const testRes = await executeTool({
           name: 'run_api_test',
-          args: { endpoint },
-          call_id
+          args: { endpoint: rawEndpoint },
+          call_id,
+          trace_id: traceId
         });
 
         if (testRes.status === 'error') return testRes;
 
-        const freshlyStored = evidenceStore.get(endpoint);
+        const freshlyStored = evidenceStoreByTrace.get(traceId);
         return {
           tool: name,
           status: 'success',
           call_id,
+          trace_id: traceId,
           evidence_id: freshlyStored?.validation.evidence_id,
-          result: freshlyStored?.validation
+          result: {
+            trace_id: traceId,
+            ...freshlyStored?.validation
+          }
         };
       }
 
       case 'create_regression_test': {
-        const endpoint = (args?.endpoint || '/api/orders/ORD-1042').trim();
-        let stored = evidenceStore.get(endpoint);
+        const rawEndpoint = args?.endpoint;
+        let stored = evidenceStoreByTrace.get(traceId);
 
         if (!stored) {
-          // Execute test first
-          await executeTool({ name: 'run_api_test', args: { endpoint }, call_id });
-          stored = evidenceStore.get(endpoint);
+          if (!rawEndpoint) {
+            return {
+              tool: name,
+              status: 'error',
+              call_id,
+              trace_id: traceId,
+              result: { error: 'Target endpoint string is required to generate regression test.' }
+            };
+          }
+          await executeTool({
+            name: 'run_api_test',
+            args: { endpoint: rawEndpoint },
+            call_id,
+            trace_id: traceId
+          });
+          stored = evidenceStoreByTrace.get(traceId);
         }
 
         if (!stored || !stored.validation) {
@@ -196,7 +294,8 @@ export async function executeTool(params: ToolCallParams): Promise<ToolExecution
             tool: name,
             status: 'error',
             call_id,
-            result: { error: `No contract evidence available for endpoint ${endpoint}` }
+            trace_id: traceId,
+            result: { error: `No contract evidence available for trace ${traceId}` }
           };
         }
 
@@ -207,18 +306,36 @@ export async function executeTool(params: ToolCallParams): Promise<ToolExecution
           tool: name,
           status: 'success',
           call_id,
+          trace_id: traceId,
           evidence_id: stored.validation.evidence_id,
-          result: regression
+          result: {
+            trace_id: traceId,
+            ...regression
+          }
         };
       }
 
       case 'create_debug_report': {
-        const endpoint = (args?.endpoint || '/api/orders/ORD-1042').trim();
-        let stored = evidenceStore.get(endpoint);
+        const rawEndpoint = args?.endpoint;
+        let stored = evidenceStoreByTrace.get(traceId);
 
         if (!stored) {
-          await executeTool({ name: 'run_api_test', args: { endpoint }, call_id });
-          stored = evidenceStore.get(endpoint);
+          if (!rawEndpoint) {
+            return {
+              tool: name,
+              status: 'error',
+              call_id,
+              trace_id: traceId,
+              result: { error: 'Target endpoint string is required to generate debug report.' }
+            };
+          }
+          await executeTool({
+            name: 'run_api_test',
+            args: { endpoint: rawEndpoint },
+            call_id,
+            trace_id: traceId
+          });
+          stored = evidenceStoreByTrace.get(traceId);
         }
 
         if (!stored || !stored.validation) {
@@ -226,7 +343,8 @@ export async function executeTool(params: ToolCallParams): Promise<ToolExecution
             tool: name,
             status: 'error',
             call_id,
-            result: { error: `No contract evidence found for endpoint ${endpoint}` }
+            trace_id: traceId,
+            result: { error: `No contract evidence found for trace ${traceId}` }
           };
         }
 
@@ -239,8 +357,12 @@ export async function executeTool(params: ToolCallParams): Promise<ToolExecution
           tool: name,
           status: 'success',
           call_id,
+          trace_id: traceId,
           evidence_id: stored.validation.evidence_id,
-          result: debugReport
+          result: {
+            trace_id: traceId,
+            ...debugReport
+          }
         };
       }
 
@@ -249,6 +371,7 @@ export async function executeTool(params: ToolCallParams): Promise<ToolExecution
           tool: name,
           status: 'error',
           call_id,
+          trace_id: traceId,
           result: { error: `Unknown tool name: ${name}` }
         };
     }
@@ -257,20 +380,17 @@ export async function executeTool(params: ToolCallParams): Promise<ToolExecution
       tool: name,
       status: 'error',
       call_id,
+      trace_id: traceId,
       result: { error: err?.message || 'Tool execution failure' }
     };
   }
 }
 
-/**
- * Execute safe HTTP request against local sandbox Express port (3001)
- * Enforces 5-second timeout and 50KB response payload limit
- */
 function makeInternalApiRequest(
   endpoint: string,
   method: string
 ): Promise<{ statusCode: number; body: any }> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const port = process.env.PORT || 3001;
     const req = http.request(
       {
@@ -278,10 +398,8 @@ function makeInternalApiRequest(
         port,
         path: endpoint,
         method,
-        headers: {
-          Accept: 'application/json'
-        },
-        timeout: 5000 // 5-second timeout
+        headers: { Accept: 'application/json' },
+        timeout: 5000
       },
       (res) => {
         let data = '';
@@ -289,7 +407,6 @@ function makeInternalApiRequest(
 
         res.on('data', (chunk) => {
           dataSize += chunk.length;
-          // Enforce 50KB size cap
           if (dataSize > 50 * 1024) {
             req.destroy();
             return resolve({
@@ -304,9 +421,7 @@ function makeInternalApiRequest(
           let parsed: any = data;
           try {
             parsed = JSON.parse(data);
-          } catch (e) {
-            // Keep as string if not JSON
-          }
+          } catch (e) {}
           resolve({
             statusCode: res.statusCode || 200,
             body: parsed

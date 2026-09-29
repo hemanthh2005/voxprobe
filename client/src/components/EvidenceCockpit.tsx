@@ -3,12 +3,12 @@ import { VoiceTranscript } from './VoiceTranscript';
 import { TimelineView } from './TimelineView';
 import { EvidenceChainGraph } from './EvidenceChainGraph';
 import { ContractDiffViewer } from './ContractDiffViewer';
-import { EvidenceNode, TranscriptTurn } from '../types';
+import { Investigation, TranscriptTurn } from '../types';
 
 interface EvidenceCockpitProps {
   turns: TranscriptTurn[];
-  evidences: EvidenceNode[];
-  activeEvidence: EvidenceNode | null;
+  investigations: Investigation[];
+  currentInvestigation: Investigation | null;
   volume: number;
   isRecording: boolean;
   onRunScenario: (prompt: string, endpoint: string) => void;
@@ -17,8 +17,8 @@ interface EvidenceCockpitProps {
 
 export const EvidenceCockpit: React.FC<EvidenceCockpitProps> = ({
   turns,
-  evidences,
-  activeEvidence,
+  investigations,
+  currentInvestigation,
   volume,
   isRecording,
   onRunScenario,
@@ -39,12 +39,12 @@ export const EvidenceCockpit: React.FC<EvidenceCockpitProps> = ({
       {/* CENTER COLUMN: Signature Evidence Chain & Live Timeline (5 cols) */}
       <div className="lg:col-span-5 h-full flex flex-col overflow-hidden p-4 space-y-4 bg-dark-950">
         <EvidenceChainGraph
-          activeEvidence={activeEvidence}
+          currentInvestigation={currentInvestigation}
           onOpenRegressionModal={onOpenRegressionModal}
         />
         <div className="flex-1 overflow-hidden rounded-2xl border border-dark-700">
           <TimelineView
-            evidences={evidences}
+            investigations={investigations}
             onOpenRegressionModal={onOpenRegressionModal}
           />
         </div>
@@ -52,7 +52,7 @@ export const EvidenceCockpit: React.FC<EvidenceCockpitProps> = ({
 
       {/* RIGHT COLUMN: Evidence Inspector & Diff Viewer (4 cols) */}
       <div className="lg:col-span-4 h-full overflow-hidden">
-        <ContractDiffViewer activeEvidence={activeEvidence} />
+        <ContractDiffViewer currentInvestigation={currentInvestigation} />
       </div>
     </div>
   );

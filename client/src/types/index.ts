@@ -9,8 +9,33 @@ export type AgentStatus =
   | 'speaking'
   | 'error';
 
+export type EngineMode = 'assemblyai' | 'simulation';
+
+export interface Investigation {
+  traceId: string;
+  userIntent: string;
+  requestedEndpoint: string;
+  executedEndpoint?: string;
+  method: string;
+  statusCode?: number;
+  observedData?: any;
+  passed?: boolean;
+  mismatchDetails?: {
+    path: string;
+    expected: string;
+    actual: string;
+    actualType: string;
+  };
+  evidenceId?: string;
+  contractId?: string;
+  regressionTestCode?: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  timestamp: string;
+}
+
 export interface TranscriptTurn {
   id: string;
+  traceId?: string;
   role: 'user' | 'agent' | 'tool';
   text: string;
   isPartial?: boolean;
@@ -21,27 +46,6 @@ export interface TranscriptTurn {
     status: 'running' | 'success' | 'failed';
     evidenceId?: string;
   };
-}
-
-export interface EvidenceNode {
-  id: string;
-  userPrompt: string;
-  toolName: string;
-  endpoint: string;
-  method: string;
-  statusCode: number;
-  observedData: any;
-  passed: boolean;
-  mismatchDetails?: {
-    path: string;
-    expected: string;
-    actual: string;
-    actualType: string;
-  };
-  evidenceId: string;
-  contractId: string;
-  regressionTestCode?: string;
-  timestamp: string;
 }
 
 export interface AssemblyAiToolDefinition {

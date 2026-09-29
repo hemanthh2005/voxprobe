@@ -1,19 +1,19 @@
 import React from 'react';
-import { Mic, MicOff, ShieldCheck, Terminal, Cpu, Radio, Sparkles } from 'lucide-react';
-import { AgentStatus } from '../types';
+import { Mic, MicOff, Terminal, Cpu, Radio } from 'lucide-react';
+import { AgentStatus, EngineMode } from '../types';
 
 interface HeaderProps {
   status: AgentStatus;
+  engineMode: EngineMode;
   isRecording: boolean;
   onToggleRecord: () => void;
-  isSimulated: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   status,
+  engineMode,
   isRecording,
-  onToggleRecord,
-  isSimulated
+  onToggleRecord
 }) => {
   const getStatusBadge = () => {
     switch (status) {
@@ -68,10 +68,10 @@ export const Header: React.FC<HeaderProps> = ({
           {badge.text}
         </div>
 
-        {isSimulated ? (
-          <div className="px-2.5 py-1 rounded-full text-[11px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-1.5" title="AssemblyAI API Key not set. Interactive local Voice Agent active.">
+        {engineMode === 'simulation' ? (
+          <div className="px-2.5 py-1 rounded-full text-[11px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-1.5" title="Interactive local Voice Engine active. Set ASSEMBLYAI_API_KEY for live AssemblyAI connection.">
             <Cpu className="w-3.5 h-3.5" />
-            <span>Sandbox Simulation</span>
+            <span>Simulation Engine</span>
           </div>
         ) : (
           <div className="px-2.5 py-1 rounded-full text-[11px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1.5">

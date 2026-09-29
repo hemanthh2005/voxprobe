@@ -1,17 +1,17 @@
 import React from 'react';
-import { Mic, Wrench, Server, ShieldCheck, AlertTriangle, FileCode, ArrowRight } from 'lucide-react';
-import { EvidenceNode } from '../types';
+import { Mic, Wrench, Server, ShieldCheck, AlertTriangle, FileCode } from 'lucide-react';
+import { Investigation } from '../types';
 
 interface EvidenceChainGraphProps {
-  activeEvidence: EvidenceNode | null;
+  currentInvestigation: Investigation | null;
   onOpenRegressionModal: (code: string) => void;
 }
 
 export const EvidenceChainGraph: React.FC<EvidenceChainGraphProps> = ({
-  activeEvidence,
+  currentInvestigation,
   onOpenRegressionModal
 }) => {
-  if (!activeEvidence) {
+  if (!currentInvestigation) {
     return (
       <div className="p-6 bg-dark-900 rounded-2xl border border-dark-700 flex flex-col items-center justify-center text-center">
         <ShieldCheck className="w-10 h-10 mb-3 text-slate-700" />
@@ -23,7 +23,19 @@ export const EvidenceChainGraph: React.FC<EvidenceChainGraphProps> = ({
     );
   }
 
-  const { userPrompt, endpoint, method, statusCode, observedData, passed, mismatchDetails, evidenceId, contractId, regressionTestCode } = activeEvidence;
+  const {
+    traceId,
+    userIntent,
+    requestedEndpoint,
+    method,
+    statusCode,
+    observedData,
+    passed,
+    mismatchDetails,
+    evidenceId,
+    contractId,
+    regressionTestCode
+  } = currentInvestigation;
 
   return (
     <div className="p-5 bg-dark-900 rounded-2xl border border-dark-700 space-y-4 shadow-xl">
@@ -32,26 +44,35 @@ export const EvidenceChainGraph: React.FC<EvidenceChainGraphProps> = ({
         <div className="flex items-center gap-2">
           <div className="h-2 w-2 rounded-full bg-accent-cyan animate-pulse"></div>
           <h3 className="text-xs font-bold font-mono text-slate-200 uppercase tracking-wider">
-            Traceable Evidence Chain #{evidenceId}
+            Traceable Evidence Chain [{traceId}]
           </h3>
         </div>
-        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-dark-800 text-slate-400 border border-dark-700">
-          Contract ID: {contractId}
-        </span>
+        <div className="flex gap-2 text-[10px] font-mono">
+          {evidenceId && (
+            <span className="px-2 py-0.5 rounded bg-dark-800 text-slate-400 border border-dark-700">
+              Evidence: {evidenceId}
+            </span>
+          )}
+          {contractId && (
+            <span className="px-2 py-0.5 rounded bg-dark-800 text-slate-400 border border-dark-700">
+              Contract: {contractId}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Visual Flow Node Diagram */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-2 items-center text-xs font-mono">
         {/* Node 1: Voice Intent */}
-        <div className="p-3 rounded-xl bg-dark-950 border border-dark-700 flex flex-col justify-between h-28 relative group hover:border-accent-cyan/50 transition-colors">
+        <div className="p-3 rounded-xl bg-dark-950 border border-dark-700 flex flex-col justify-between h-28 hover:border-accent-cyan/50 transition-colors">
           <div className="flex items-center gap-1.5 text-accent-cyan mb-1">
             <Mic className="w-3.5 h-3.5" />
             <span className="text-[10px] font-bold uppercase">1. Voice Input</span>
           </div>
           <p className="text-[11px] text-slate-300 line-clamp-3 italic font-sans">
-            "{userPrompt}"
+            "{userIntent}"
           </p>
-          <span className="text-[9px] text-slate-500">Audio Streamed</span>
+          <span className="text-[9px] text-slate-500">Trace: {traceId}</span>
         </div>
 
         {/* Node 2: Tool Execution */}
@@ -64,7 +85,7 @@ export const EvidenceChainGraph: React.FC<EvidenceChainGraphProps> = ({
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-dark-800 text-accent-cyan font-bold block w-fit">
               run_api_test
             </span>
-            <p className="text-[11px] font-bold text-white truncate">{method} {endpoint}</p>
+            <p className="text-[11px] font-bold text-white truncate">{method} {requestedEndpoint}</p>
           </div>
           <span className="text-[9px] text-slate-500">Internal Express Sandbox</span>
         </div>
@@ -76,9 +97,9 @@ export const EvidenceChainGraph: React.FC<EvidenceChainGraphProps> = ({
             <span className="text-[10px] font-bold uppercase">3. Raw Output</span>
           </div>
           <div className="space-y-0.5">
-            <span className="text-[10px] text-emerald-400 font-bold">{statusCode} OK</span>
+            {statusCode && <span className="text-[10px] text-emerald-400 font-bold">{statusCode} OK</span>}
             <p className="text-[10px] text-slate-400 font-mono truncate">
-              {JSON.stringify(observedData)}
+              {observedData ? JSON.stringify(observedData) : 'Awaiting response'}
             </p>
           </div>
           <span className="text-[9px] text-slate-500">JSON Payload</span>
@@ -87,19 +108,23 @@ export const EvidenceChainGraph: React.FC<EvidenceChainGraphProps> = ({
         {/* Node 4: Contract Check */}
         <div
           className={`p-3 rounded-xl border flex flex-col justify-between h-28 transition-colors ${
-            passed
+            passed === undefined
+              ? 'bg-dark-950 border-dark-700 text-slate-400'
+              : passed
               ? 'bg-emerald-950/20 border-accent-emerald/40 text-emerald-300'
               : 'bg-rose-950/30 border-accent-rose/50 text-rose-300 glow-rose'
           }`}
         >
           <div className="flex items-center gap-1.5 mb-1">
-            {passed ? (
+            {passed === undefined ? (
+              <ShieldCheck className="w-3.5 h-3.5 text-slate-500" />
+            ) : passed ? (
               <ShieldCheck className="w-3.5 h-3.5 text-accent-emerald" />
             ) : (
               <AlertTriangle className="w-3.5 h-3.5 text-accent-rose animate-pulse" />
             )}
             <span className="text-[10px] font-bold uppercase">
-              {passed ? '4. Schema Pass' : '4. Contract Defect'}
+              {passed === undefined ? '4. Contract Check' : passed ? '4. Schema Pass' : '4. Contract Defect'}
             </span>
           </div>
           {mismatchDetails ? (
@@ -108,8 +133,10 @@ export const EvidenceChainGraph: React.FC<EvidenceChainGraphProps> = ({
               <p className="text-rose-400 font-semibold">Observed: {mismatchDetails.actual}</p>
               <p className="text-emerald-400">Expected: {mismatchDetails.expected}</p>
             </div>
-          ) : (
+          ) : passed ? (
             <p className="text-[10px] text-emerald-400">Response satisfies OpenAPI spec</p>
+          ) : (
+            <p className="text-[10px] text-slate-500">Evaluating schema...</p>
           )}
           <span className="text-[9px] opacity-75">AJV Engine Verification</span>
         </div>

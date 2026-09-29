@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
-import { ShieldCheck, AlertCircle, FileText, Code2, Check, Copy } from 'lucide-react';
-import { EvidenceNode } from '../types';
+import { ShieldCheck, AlertCircle, Code2, Check, Copy } from 'lucide-react';
+import { Investigation } from '../types';
 
 interface ContractDiffViewerProps {
-  activeEvidence: EvidenceNode | null;
+  currentInvestigation: Investigation | null;
 }
 
-export const ContractDiffViewer: React.FC<ContractDiffViewerProps> = ({ activeEvidence }) => {
+export const ContractDiffViewer: React.FC<ContractDiffViewerProps> = ({ currentInvestigation }) => {
   const [activeTab, setActiveTab] = useState<'diff' | 'raw' | 'contract'>('diff');
   const [copied, setCopied] = useState(false);
 
@@ -16,9 +16,9 @@ export const ContractDiffViewer: React.FC<ContractDiffViewerProps> = ({ activeEv
     setTimeout(() => setCopied(false), 2000);
   };
 
-  if (!activeEvidence) {
+  if (!currentInvestigation) {
     return (
-      <div className="flex flex-col h-full bg-dark-900 border-l border-dark-700 p-6 flex items-center justify-center text-center text-slate-500">
+      <div className="flex flex-col h-full bg-dark-900 border-l border-dark-700 p-6 items-center justify-center text-center text-slate-500">
         <Code2 className="w-10 h-10 mb-3 text-slate-700" />
         <h3 className="text-sm font-semibold text-slate-400">Contract Verification & Diff Inspector</h3>
         <p className="text-xs font-mono mt-1 text-slate-500 max-w-xs">
@@ -28,7 +28,17 @@ export const ContractDiffViewer: React.FC<ContractDiffViewerProps> = ({ activeEv
     );
   }
 
-  const { endpoint, method, statusCode, observedData, passed, mismatchDetails, evidenceId, contractId } = activeEvidence;
+  const {
+    traceId,
+    requestedEndpoint,
+    method,
+    statusCode,
+    observedData,
+    passed,
+    mismatchDetails,
+    evidenceId,
+    contractId
+  } = currentInvestigation;
 
   return (
     <div className="flex flex-col h-full bg-dark-900 border-l border-dark-700">
@@ -38,17 +48,19 @@ export const ContractDiffViewer: React.FC<ContractDiffViewerProps> = ({ activeEv
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-accent-cyan" />
             <h2 className="text-sm font-semibold tracking-wide uppercase text-slate-300 font-mono">
-              Evidence Inspector
+              Evidence Inspector [{traceId}]
             </h2>
           </div>
           <span
             className={`text-xs font-mono font-semibold px-2.5 py-0.5 rounded-full border ${
-              passed
+              passed === undefined
+                ? 'bg-dark-800 text-slate-400 border-dark-700'
+                : passed
                 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                 : 'bg-rose-500/10 text-rose-400 border-rose-500/20 animate-pulse'
             }`}
           >
-            {passed ? 'PASSED' : 'CONTRACT MISMATCH'}
+            {passed === undefined ? 'PENDING' : passed ? 'PASSED' : 'CONTRACT MISMATCH'}
           </span>
         </div>
 
@@ -95,11 +107,15 @@ export const ContractDiffViewer: React.FC<ContractDiffViewerProps> = ({ activeEv
             <div className="p-3 rounded-xl bg-dark-950 border border-dark-700 flex justify-between items-center">
               <div>
                 <span className="text-[10px] text-slate-500 block">TARGET ENDPOINT</span>
-                <span className="font-bold text-slate-200">{method} {endpoint}</span>
+                <span className="font-bold text-slate-200">{method} {requestedEndpoint}</span>
               </div>
               <div className="text-right">
                 <span className="text-[10px] text-slate-500 block">STATUS</span>
-                <span className="text-emerald-400 font-bold">{statusCode} OK</span>
+                {statusCode ? (
+                  <span className="text-emerald-400 font-bold">{statusCode} OK</span>
+                ) : (
+                  <span className="text-slate-500">Executing...</span>
+                )}
               </div>
             </div>
 
@@ -111,7 +127,7 @@ export const ContractDiffViewer: React.FC<ContractDiffViewerProps> = ({ activeEv
                     <AlertCircle className="w-4 h-4" />
                     Verified OpenAPI Schema Violation
                   </span>
-                  <span className="text-[10px] text-slate-400">{evidenceId}</span>
+                  {evidenceId && <span className="text-[10px] text-slate-400">{evidenceId}</span>}
                 </div>
 
                 <div className="space-y-2 text-[11px]">
@@ -136,7 +152,7 @@ export const ContractDiffViewer: React.FC<ContractDiffViewerProps> = ({ activeEv
                   </div>
                 </div>
               </div>
-            ) : (
+            ) : passed ? (
               <div className="p-4 rounded-xl bg-emerald-950/20 border border-accent-emerald/40 text-emerald-300 flex items-center gap-3">
                 <ShieldCheck className="w-6 h-6 text-accent-emerald flex-shrink-0" />
                 <div>
@@ -146,31 +162,33 @@ export const ContractDiffViewer: React.FC<ContractDiffViewerProps> = ({ activeEv
                   </p>
                 </div>
               </div>
-            )}
+            ) : null}
 
             {/* Highlighting Code Viewer */}
-            <div className="relative group">
-              <div className="flex items-center justify-between bg-dark-950 px-3 py-2 border border-dark-700 rounded-t-xl text-[10px] text-slate-400">
-                <span>RAW RESPONSE PAYLOAD IN INSPECTOR</span>
-                <button
-                  onClick={() => handleCopy(JSON.stringify(observedData, null, 2))}
-                  className="flex items-center gap-1 hover:text-white transition-colors"
-                >
-                  {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                  <span>{copied ? 'Copied' : 'Copy'}</span>
-                </button>
+            {observedData && (
+              <div className="relative group">
+                <div className="flex items-center justify-between bg-dark-950 px-3 py-2 border border-dark-700 rounded-t-xl text-[10px] text-slate-400">
+                  <span>RAW RESPONSE PAYLOAD FOR TRACE {traceId}</span>
+                  <button
+                    onClick={() => handleCopy(JSON.stringify(observedData, null, 2))}
+                    className="flex items-center gap-1 hover:text-white transition-colors"
+                  >
+                    {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    <span>{copied ? 'Copied' : 'Copy'}</span>
+                  </button>
+                </div>
+                <pre className="p-3.5 bg-dark-950 border border-t-0 border-dark-700 rounded-b-xl overflow-x-auto text-slate-200 leading-relaxed text-[11px]">
+                  {JSON.stringify(observedData, null, 2)}
+                </pre>
               </div>
-              <pre className="p-3.5 bg-dark-950 border border-t-0 border-dark-700 rounded-b-xl overflow-x-auto text-slate-200 leading-relaxed text-[11px]">
-                {JSON.stringify(observedData, null, 2)}
-              </pre>
-            </div>
+            )}
           </div>
         )}
 
-        {activeTab === 'raw' && (
+        {activeTab === 'raw' && observedData && (
           <div className="space-y-2">
             <div className="flex justify-between items-center text-[10px] text-slate-400">
-              <span>FULL API RESPONSE (HTTP {statusCode})</span>
+              <span>FULL API RESPONSE (HTTP {statusCode || 200})</span>
               <button
                 onClick={() => handleCopy(JSON.stringify(observedData, null, 2))}
                 className="hover:text-white"

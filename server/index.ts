@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import dotenv from 'dotenv';
 import { sandboxRouter } from './routes/sandbox';
 import { tokenRouter } from './routes/token';
@@ -38,7 +39,7 @@ app.get('*', (req, res, next) => {
     return next();
   }
   const indexPath = path.join(clientBuildPath, 'index.html');
-  if (require('fs').existsSync(indexPath)) {
+  if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {
     res.send('VoxProbe API Server is running. Frontend dev server active on port 5173.');

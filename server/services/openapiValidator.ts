@@ -134,13 +134,14 @@ export function validateResponseAgainstContract(
   }
 
   const mismatches = (validate.errors || []).map((err: ErrorObject) => {
-    const dataPath = err.instancePath ? err.instancePath.replace(/^\//, '') : 'root';
-    const fieldName = dataPath === 'root' ? '' : dataPath;
+    const rawPath = err.instancePath ? err.instancePath.replace(/^\//, '') : '';
+    const fieldPath = rawPath || (err.params?.missingProperty ? String(err.params.missingProperty) : 'root');
 
-    let actualVal = fieldName ? getDeepValue(responseBody, fieldName) : responseBody;
+    let actualVal = fieldPath !== 'root' ? getDeepValue(responseBody, fieldPath) : responseBody;
     let actualType: string = typeof actualVal;
     if (actualVal === null) actualType = 'null';
     if (Array.isArray(actualVal)) actualType = 'array';
+    if (actualVal === undefined) actualType = 'undefined';
 
     let expected = err.message || 'schema match';
     if (err.keyword === 'type') {
@@ -152,7 +153,7 @@ export function validateResponseAgainstContract(
     }
 
     return {
-      path: dataPath || (err.params.missingProperty ? err.params.missingProperty : 'root'),
+      path: fieldPath,
       keyword: err.keyword,
       message: err.message || 'Validation error',
       expected: String(expected),
