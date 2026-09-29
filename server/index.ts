@@ -10,18 +10,21 @@ import { toolsRouter } from './routes/tools';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = Number(process.env.PORT) || 3001;
 
 // Security & Parsing Middleware
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '100kb' }));
 
-// API Routes
-app.use('/api', sandboxRouter);
-app.use('/api', tokenRouter);
-app.use('/api/tools', toolsRouter);
+// Health Check Endpoint (Render Production Specification)
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'voxprobe'
+  });
+});
 
-// Health check endpoint
+// Detailed API Health Endpoint
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -30,12 +33,17 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Serve frontend in production
+// API Routes
+app.use('/api', sandboxRouter);
+app.use('/api', tokenRouter);
+app.use('/api/tools', toolsRouter);
+
+// Serve Production React Frontend
 const clientBuildPath = path.join(process.cwd(), 'dist', 'client');
 app.use(express.static(clientBuildPath));
 
 app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api')) {
+  if (req.path.startsWith('/api') || req.path === '/health') {
     return next();
   }
   const indexPath = path.join(clientBuildPath, 'index.html');
@@ -46,10 +54,11 @@ app.get('*', (req, res, next) => {
   }
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`===================================================`);
-  console.log(` VoxProbe Backend Engine running on http://localhost:${PORT}`);
+  console.log(` VoxProbe Backend Engine running on http://0.0.0.0:${PORT}`);
   console.log(` Sandbox Microservices API ready at /api/orders, /api/users`);
   console.log(` AssemblyAI Token Endpoint ready at /api/token`);
+  console.log(` Health Endpoint ready at /health`);
   console.log(`===================================================`);
 });
