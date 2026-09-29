@@ -112,22 +112,23 @@ export class AssemblyAiVoiceClient {
     this.options.onStatusChange('connecting');
 
     try {
-      // Fetch temporary token from server backend
+      // 1. Fetch temporary token from server backend
       const tokenRes = await fetch('/api/token');
       const tokenData = await tokenRes.json();
 
       if (!tokenData.configured || !tokenData.success || !tokenData.token) {
-        console.warn('AssemblyAI key not set or token error. Falling back to Voice Simulation Mode.');
+        console.warn('[AssemblyAI] Token unconfigured or failed. Falling back to Simulation Engine.');
         this.setEngineMode('simulation');
         this.setupSimulationMode();
         return;
       }
 
-      // Open AssemblyAI Voice Agent WebSocket connection
+      // 2. Open AssemblyAI Voice Agent WebSocket connection
       const wsUrl = `wss://agents.assemblyai.com/v1/ws?token=${tokenData.token}`;
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
+        console.log('[AssemblyAI] Voice Agent WebSocket connected');
         this.sendSessionUpdate();
       };
 
@@ -136,8 +137,8 @@ export class AssemblyAiVoiceClient {
       };
 
       this.ws.onerror = (err) => {
-        console.error('AssemblyAI WebSocket error:', err);
-        this.options.onError('AssemblyAI connection error. Falling back to simulation engine.');
+        console.error('[AssemblyAI] WebSocket error encountered:', err);
+        this.options.onError('AssemblyAI WebSocket connection failed. Switching to Simulation Engine.');
         this.setEngineMode('simulation');
         this.setupSimulationMode();
       };
@@ -146,7 +147,7 @@ export class AssemblyAiVoiceClient {
         this.options.onStatusChange('idle');
       };
     } catch (err: any) {
-      console.warn('Connection exception:', err);
+      console.warn('[AssemblyAI] Exception during connection:', err);
       this.setEngineMode('simulation');
       this.setupSimulationMode();
     }
@@ -165,12 +166,15 @@ export class AssemblyAiVoiceClient {
       session: {
         system_prompt: SYSTEM_PROMPT,
         greeting: 'Hello! I am VoxProbe, your evidence-first API debugging agent. What endpoint should we investigate?',
-        voice: 'en_us_male_1',
+        output: {
+          voice: 'en_us_male_1'
+        },
         tools: VOXPROBE_TOOLS
       }
     };
 
     this.ws.send(JSON.stringify(sessionUpdate));
+    console.log('[AssemblyAI] session.update sent');
   }
 
   private async handleServerEvent(data: string) {
@@ -179,9 +183,21 @@ export class AssemblyAiVoiceClient {
 
       switch (msg.type) {
         case 'session.ready':
+          console.log('[AssemblyAI] session.ready received');
           this.setEngineMode('assemblyai');
           this.options.onStatusChange('ready');
           await this.startMicrophone();
+          break;
+
+        case 'session.updated':
+          console.log('[AssemblyAI] session.updated confirmed');
+          break;
+
+        case 'session.error':
+          console.error(`AssemblyAI Voice Agent error: <${msg.code || 'ERROR'}> <${msg.message || 'Unknown session error'}>`);
+          this.options.onError(`AssemblyAI Voice Agent error: <${msg.code || 'ERROR'}> <${msg.message || 'Session error'}>`);
+          this.setEngineMode('simulation');
+          this.setupSimulationMode();
           break;
 
         case 'input.speech.started':
@@ -190,6 +206,10 @@ export class AssemblyAiVoiceClient {
           this.pendingToolResults.clear();
           this.startNewTrace();
           this.options.onStatusChange('listening');
+          break;
+
+        case 'input.speech.stopped':
+          this.options.onStatusChange('thinking');
           break;
 
         case 'transcript.user.delta':
@@ -216,15 +236,8 @@ export class AssemblyAiVoiceClient {
           this.options.onStatusChange('thinking');
           break;
 
-        case 'transcript.agent.delta':
-          this.options.onTranscriptTurn({
-            id: 'agent-partial',
-            traceId: this.activeTraceId,
-            role: 'agent',
-            text: msg.text || msg.transcript || '',
-            isPartial: true,
-            timestamp: new Date().toLocaleTimeString()
-          });
+        case 'reply.started':
+          this.options.onStatusChange('speaking');
           break;
 
         case 'transcript.agent':
@@ -247,20 +260,19 @@ export class AssemblyAiVoiceClient {
 
         case 'reply.done':
           if (msg.status === 'interrupted') {
-            // Interrupted: Discard pending tool results for trace
+            // Interrupted: Discard pending tool results for trace & flush audio
             this.pendingToolResults.clear();
             this.player.stopAndFlush();
           } else {
-            // Send pending tool results
+            // Send pending tool results using original call_id
             for (const [callId, item] of this.pendingToolResults.entries()) {
               if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                this.ws.send(
-                  JSON.stringify({
-                    type: 'tool.result',
-                    call_id: callId,
-                    result: item.result
-                  })
-                );
+                const toolResultPayload = {
+                  type: 'tool.result',
+                  call_id: callId,
+                  result: typeof item.result === 'string' ? item.result : JSON.stringify(item.result)
+                };
+                this.ws.send(JSON.stringify(toolResultPayload));
               }
               if (item.inv) {
                 this.options.onInvestigationUpdated(item.inv);
@@ -272,7 +284,8 @@ export class AssemblyAiVoiceClient {
           break;
 
         case 'tool.call':
-          await this.handleToolCall(msg.call_id, msg.name, msg.args);
+          // Official AssemblyAI Voice Agent tool.call uses msg.arguments
+          await this.handleToolCall(msg.call_id, msg.name, msg.arguments || msg.args);
           break;
 
         case 'session.ended':
@@ -280,7 +293,7 @@ export class AssemblyAiVoiceClient {
           break;
       }
     } catch (err) {
-      console.error('Error handling WebSocket message:', err);
+      console.error('Error handling AssemblyAI WebSocket message:', err);
     }
   }
 
@@ -289,7 +302,7 @@ export class AssemblyAiVoiceClient {
     return this.activeTraceId;
   }
 
-  private async handleToolCall(callId: string, name: string, args: any) {
+  private async handleToolCall(callId: string, name: string, toolArguments: any) {
     this.options.onStatusChange('executing_tool');
 
     if (!this.activeTraceId) {
@@ -302,11 +315,11 @@ export class AssemblyAiVoiceClient {
       id: `tool-${Date.now()}`,
       traceId: currentTrace,
       role: 'tool',
-      text: `Executing tool: ${name} (${JSON.stringify(args)}) [Trace: ${currentTrace}]`,
+      text: `Executing tool: ${name} (${JSON.stringify(toolArguments)}) [Trace: ${currentTrace}]`,
       timestamp: new Date().toLocaleTimeString(),
       toolCall: {
         name,
-        args,
+        args: toolArguments,
         status: 'running'
       }
     });
@@ -315,7 +328,7 @@ export class AssemblyAiVoiceClient {
       const res = await fetch('/api/tools/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, args, call_id: callId, trace_id: currentTrace })
+        body: JSON.stringify({ name, args: toolArguments, call_id: callId, trace_id: currentTrace })
       });
 
       const toolRes = await res.json();
@@ -326,8 +339,8 @@ export class AssemblyAiVoiceClient {
         inv = {
           traceId: currentTrace,
           userIntent: this.lastUserPrompt || 'API Diagnostic Request',
-          requestedEndpoint: args?.endpoint || 'Unknown',
-          method: args?.method || 'GET',
+          requestedEndpoint: toolArguments?.endpoint || 'Unknown',
+          method: toolArguments?.method || 'GET',
           status: 'failed',
           timestamp: new Date().toLocaleTimeString()
         };
@@ -338,7 +351,7 @@ export class AssemblyAiVoiceClient {
         inv = {
           traceId: currentTrace,
           userIntent: this.lastUserPrompt || 'API Diagnostic Request',
-          requestedEndpoint: toolRes.result.requested_endpoint || args?.endpoint || '/api/orders/ORD-1042',
+          requestedEndpoint: toolRes.result.requested_endpoint || toolArguments?.endpoint || '/api/orders/ORD-1042',
           executedEndpoint: toolRes.result.endpoint,
           method: toolRes.result.method || 'GET',
           statusCode: toolRes.result.status_code || 200,
@@ -361,7 +374,7 @@ export class AssemblyAiVoiceClient {
         inv = {
           traceId: currentTrace,
           userIntent: this.lastUserPrompt || 'Create regression test',
-          requestedEndpoint: toolRes.result.endpoint || args?.endpoint || '/api/orders/ORD-1042',
+          requestedEndpoint: toolRes.result.endpoint || toolArguments?.endpoint || '/api/orders/ORD-1042',
           executedEndpoint: toolRes.result.endpoint,
           method: toolRes.result.method || 'GET',
           statusCode: 200,
