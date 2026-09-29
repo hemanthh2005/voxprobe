@@ -167,7 +167,7 @@ export class AssemblyAiVoiceClient {
         system_prompt: SYSTEM_PROMPT,
         greeting: 'Hello! I am VoxProbe, your evidence-first API debugging agent. What endpoint should we investigate?',
         output: {
-          voice: 'en_us_male_1'
+          voice: 'michael'
         },
         tools: VOXPROBE_TOOLS
       }
