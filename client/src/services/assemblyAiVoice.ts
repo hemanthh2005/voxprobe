@@ -177,7 +177,7 @@ export class AssemblyAiVoiceClient {
     console.log('[AssemblyAI] session.update sent');
   }
 
-  private async handleServerEvent(data: string) {
+  private handleServerEvent(data: string) {
     try {
       const msg = JSON.parse(data);
 
@@ -186,7 +186,7 @@ export class AssemblyAiVoiceClient {
           console.log('[AssemblyAI] session.ready received');
           this.setEngineMode('assemblyai');
           this.options.onStatusChange('ready');
-          await this.startMicrophone();
+          this.startMicrophone().catch(err => console.error('Mic start error:', err));
           break;
 
         case 'session.updated':
@@ -201,7 +201,8 @@ export class AssemblyAiVoiceClient {
           break;
 
         case 'input.speech.started':
-          // Instant Barge-in: user started speaking -> stop agent audio & discard stale pending tools
+          // Instant Barge-in: user started speaking -> stop agent audio & discard pending tool calls
+          console.log('[AAI] input.speech.started (barge-in triggered)');
           this.player.stopAndFlush();
           this.pendingToolResults.clear();
           this.startNewTrace();
@@ -259,33 +260,20 @@ export class AssemblyAiVoiceClient {
           break;
 
         case 'reply.done':
+          console.log(`[AAI] reply.done received (status=${msg.status || 'completed'})`);
           if (msg.status === 'interrupted') {
-            // Interrupted: Discard pending tool results for trace & flush audio
+            console.log('[AAI] reply.done interrupted -> flushing playback & clearing pending tools');
             this.pendingToolResults.clear();
             this.player.stopAndFlush();
-          } else {
-            // Send pending tool results using original call_id
-            for (const [callId, item] of this.pendingToolResults.entries()) {
-              if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                const toolResultPayload = {
-                  type: 'tool.result',
-                  call_id: callId,
-                  result: typeof item.result === 'string' ? item.result : JSON.stringify(item.result)
-                };
-                this.ws.send(JSON.stringify(toolResultPayload));
-              }
-              if (item.inv) {
-                this.options.onInvestigationUpdated(item.inv);
-              }
-            }
-            this.pendingToolResults.clear();
           }
           this.options.onStatusChange('listening');
           break;
 
         case 'tool.call':
-          // Official AssemblyAI Voice Agent tool.call uses msg.arguments
-          await this.handleToolCall(msg.call_id, msg.name, msg.arguments || msg.args);
+          // Non-blocking async invocation of handleToolCall so WS receive loop continues unhindered
+          this.handleToolCall(msg.call_id, msg.name, msg.arguments || msg.args).catch(err => {
+            console.error('[AAI] Error in handleToolCall execution:', err);
+          });
           break;
 
         case 'session.ended':
@@ -303,6 +291,7 @@ export class AssemblyAiVoiceClient {
   }
 
   private async handleToolCall(callId: string, name: string, toolArguments: any) {
+    const startTime = Date.now();
     this.options.onStatusChange('executing_tool');
 
     if (!this.activeTraceId) {
@@ -310,6 +299,7 @@ export class AssemblyAiVoiceClient {
     }
 
     const currentTrace = this.activeTraceId;
+    console.log(`[AAI] tool.call received: ${name} (call_id=${callId}, traceId=${currentTrace})`);
 
     this.options.onTranscriptTurn({
       id: `tool-${Date.now()}`,
@@ -332,6 +322,9 @@ export class AssemblyAiVoiceClient {
       });
 
       const toolRes = await res.json();
+      const elapsedMs = Date.now() - startTime;
+      console.log(`[AAI] tool execution completed in ${elapsedMs}ms for ${name} (call_id=${callId})`);
+
       let inv: Investigation | undefined;
 
       // Fail Closed Check: Requested endpoint vs executed endpoint state integrity
@@ -388,18 +381,38 @@ export class AssemblyAiVoiceClient {
         };
       }
 
-      this.pendingToolResults.set(callId, {
-        call_id: callId,
-        traceId: currentTrace,
-        result: toolRes.result,
-        inv
-      });
+      // Update UI Evidence Chain & Inspector Immediately
+      if (inv) {
+        this.options.onInvestigationUpdated(inv);
+      }
+
+      // CRITICAL FIX: Send tool.result over WebSocket IMMEDIATELY upon completion of tool execution!
+      // This unblocks AssemblyAI Voice Agent generation and eliminates the 120s timeout completely.
+      const toolResultPayload = {
+        type: 'tool.result',
+        call_id: callId, // ORIGINAL tool call_id preserved exactly!
+        result: typeof toolRes.result === 'string' ? toolRes.result : JSON.stringify(toolRes.result)
+      };
+
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        console.log(`[AAI] sending tool.result (call_id=${callId}, traceId=${currentTrace}, elapsed=${elapsedMs}ms)`);
+        this.ws.send(JSON.stringify(toolResultPayload));
+      } else {
+        console.warn(`[AAI] WebSocket not open when sending tool.result for call_id=${callId}`);
+      }
     } catch (err: any) {
-      this.pendingToolResults.set(callId, {
+      const elapsedMs = Date.now() - startTime;
+      console.error(`[AAI] Tool execution error for call_id=${callId} after ${elapsedMs}ms:`, err);
+
+      const errorPayload = {
+        type: 'tool.result',
         call_id: callId,
-        traceId: currentTrace,
-        result: { error: err.message || 'Tool execution failure' }
-      });
+        result: JSON.stringify({ error: err.message || 'Tool execution failure' })
+      };
+
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify(errorPayload));
+      }
     }
   }
 
@@ -456,12 +469,6 @@ export class AssemblyAiVoiceClient {
     const callId = `call_${Date.now()}`;
     await this.handleToolCall(callId, 'run_api_test', { endpoint: targetEndpoint, method: 'GET' });
 
-    const item = this.pendingToolResults.get(callId);
-    if (item && item.inv) {
-      this.options.onInvestigationUpdated(item.inv);
-    }
-    this.pendingToolResults.clear();
-
     let spokenResponse = `I tested GET ${targetEndpoint}. The server returned HTTP 200, but field total was a string while the OpenAPI contract requires a number.`;
     if (targetEndpoint === '/api/orders/ORD-1043') {
       spokenResponse = `I tested GET ${targetEndpoint}. Status in_transit violates the allowed OpenAPI Enum list.`;
@@ -495,12 +502,6 @@ export class AssemblyAiVoiceClient {
 
     const callId = `call_${Date.now()}`;
     await this.handleToolCall(callId, 'create_regression_test', { endpoint: targetEndpoint });
-
-    const item = this.pendingToolResults.get(callId);
-    if (item && item.inv) {
-      this.options.onInvestigationUpdated(item.inv);
-    }
-    this.pendingToolResults.clear();
 
     this.options.onTranscriptTurn({
       id: `agent-${Date.now()}`,
